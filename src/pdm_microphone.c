@@ -18,7 +18,7 @@
 
 #include "pico/pdm_microphone.h"
 
-#define PDM_DECIMATION       64
+#define PDM_DECIMATION       128
 #define PDM_RAW_BUFFER_COUNT 2
 
 static struct {
