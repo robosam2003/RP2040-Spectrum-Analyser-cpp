@@ -27,12 +27,16 @@
 #define NUM_STRIPS 10 // for now...
 #define nsamples 256
 #define pi 3.14159265358979323846
-uint divisions[10] = {141, 206, 316, 445, 703, 1078, 1570, 2320, 3281, 3840};
-#define UPPER_THRESHOLD 100000
-#define AVG_PERIOD 156;
+uint divisions[10] = {141, 206, 316, 445, 703, 1078, 1570, 2320, 3281};
+#define UPPER_THRESHOLD 20000
+#define LONG_MA_PERIOD 128
+#define SHORT_MA_PERIOD 20
 
 #define RED urgb_u32(255, 0, 0)
 #define YELLOW urgb_u32(255, 255, 0)
+#define PURPLE urgb_u32(255, 0, 255)
+
+
 /* my attempt at an fft - failed miserably due to memory constraints - using kiss_fft instead
 //complex double * fft(complex double P[], const int n) {
 //    // n should be a power of two
@@ -101,7 +105,7 @@ void clear_strip(){
     }
 }
 
-void set_strips_level(uint levels[], uint32_t colour) {// levels range from 0 to 28.
+void set_strips_level(unsigned long long levels[], uint32_t colour) {// levels range from 0 to 28.
     for (int i=0;i<NUM_STRIPS;i++) {
         for (int j=0;j<levels[i];j++) {
             put_pixel(colour);
@@ -155,9 +159,11 @@ int main() {
     clear_strip();
     sleep_ms(10);
 
+    unsigned long long longMA[NUM_STRIPS] = {};
+    unsigned long long shortMA[NUM_STRIPS] = {};
 
     uint levels[NUM_STRIPS] = {}; // REMOVE THE *2 when you have 10 strips
-
+    unsigned long long loopCounter = 1;
     while (1) {
         // wait for new samples
         while (samples_read == 0) { tight_loop_contents(); }
@@ -180,6 +186,8 @@ int main() {
         for (int i=0;i<3;i++) { // attenuate the first 3 signals (up to 60HZ)
             freqMag[i] = 0;
         }
+
+        // split frequencies into 10 divisions
         int counter = 0;
         for (int i=0;i<10;){
             for (int j=0;j<nsamples/2;j++) {
@@ -196,9 +204,34 @@ int main() {
                 }
             }
         }
+        /// SHORT MA
+        if (loopCounter<SHORT_MA_PERIOD){
+            for (int i=0; i<NUM_STRIPS;i++) {
+                shortMA[i] += levels[i];
+                shortMA[i] /= loopCounter;
+            }
+        }
+        else {
+            for (int i=0; i<NUM_STRIPS;i++) {
+                shortMA[i] = (shortMA[i]*SHORT_MA_PERIOD +  levels[i]) / (SHORT_MA_PERIOD+1);
+            }
+        }
+
+        /// LONG MA
+        if (loopCounter<LONG_MA_PERIOD){
+            for (int i=0; i<NUM_STRIPS;i++) {
+                longMA[i] += levels[i];
+                longMA[i] /= loopCounter;
+            }
+        }
+        else {
+            for (int i=0; i<NUM_STRIPS;i++) {
+                longMA[i] = (longMA[i]*LONG_MA_PERIOD +  levels[i]) / (LONG_MA_PERIOD+1);
+            }
+        }
 
         for (int i=0;i<NUM_STRIPS;i++) {
-            printf("%d ", levels[i]);
+            printf("%llu ", shortMA [i]);
         }
 
         printf("\n");
@@ -209,18 +242,18 @@ int main() {
 //        avMag/=40;
 
         for(int i=0;i<NUM_STRIPS;i++) {
-            double div = UPPER_THRESHOLD/LEDS_PER_STRIP;
-            levels[i] /= div;
-            (levels[i] > LEDS_PER_STRIP) ? levels[i]=LEDS_PER_STRIP : 0;
-            (levels[i] < 0) ? levels[i] = 0 : 0; // should never occur
+            double div = UPPER_THRESHOLD / LEDS_PER_STRIP;
+            shortMA[i] /= div;
+            (shortMA[i] > LEDS_PER_STRIP) ? shortMA[i]=LEDS_PER_STRIP : 0;
+            (shortMA[i] < 0) ? shortMA[i] = 0 : 0; // should never occur
         }
-        set_strips_level(levels, YELLOW);
+        set_strips_level(shortMA, PURPLE);
 
         sleep_us(400);
         for (int i=0;i<NUM_STRIPS;i++) {
             levels[i] = 0;
         }
-
+        loopCounter++;
     }
 
     kiss_fft_free(cfg); // will never get here
