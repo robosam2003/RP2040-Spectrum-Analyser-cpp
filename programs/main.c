@@ -24,15 +24,29 @@
 
 #define LED_STRIP_PIN 16
 #define NUM_LEDS 288
-#define LEDS_PER_STRIP 28 // Will be 28 with the full thing // just<20cm
-#define NUM_STRIPS 10 // for now...
+#define LEDS_PER_STRIP 24 // Will be 28 with the full thing // just<20cm
+#define NUM_STRIPS 12 // for now...
 #define nsamples 256
 #define pi 3.14159265358979323846
-uint divisions[10] = {141, 206, 316, 445, 703, 1078, 1570, 2320, 3200};
-#define MAX_THRESHOLD 200000
+uint divisions[NUM_STRIPS] = {121,
+                              147,
+                              178,
+                              215,
+                              261,
+                              316,
+                              383,
+                              464,
+                              562,
+                              699,
+                              825,
+                              1000};
+#define MAX_THRESHOLD 1000000
 //uint thresholds[10] = {100000, 500000, 500000, 500000, 500000, 500000, 500000, 500000, 500000, 500000};
-uint multipliers[10] = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1};
+uint multipliers[12] = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1};
 
+
+uint MALevels[12] = {};
+#define MAduration 10
 
 #define WHITE            urgb_u32(0XFF, 0xFF, 0xFF)
 #define BLACK            urgb_u32(0x00, 0x00, 0x00)
@@ -215,7 +229,7 @@ int main() {
 
     int mode = SPECTRUM_ANALYSER;
 
-    uint levels[NUM_STRIPS] = {}; // REMOVE THE *2 when you have 10 strips
+    uint levels[NUM_STRIPS] = {};
     unsigned long long loopCounter = 1;
     while (1) {
         switch (mode) {
@@ -240,7 +254,6 @@ int main() {
                 kiss_fft_scalar fft_in[nsamples];
                 kiss_fft_cpx fft_out[nsamples];
                 kiss_fftr_cfg cfg = kiss_fftr_alloc(nsamples, false, 0, 0);
-
 
                 // ******  Loop *******
                 while (1) {
@@ -268,30 +281,44 @@ int main() {
                         freqMag[i] = 0;
                     }
 
-                    // split frequencies into 10 divisions
-                    int counter = 0;
-                    for (int i = 0; i < 10;) {
+                    // split frequencies into 12 divisions
+                    //int counter = 0;
+                    for (int i = 0; i < NUM_STRIPS;) {
                         for (int j = 0; j < nsamples / 2; j++) {
                             if (j * 31 < divisions[i]) {
                                 levels[i] += freqMag[j];
-                                counter++;
+                                //counter++;
                             } else {
-                                levels[i] /= counter;
+                                //levels[i] /= counter;
                                 ++i;
-                                counter = 0;
+                                //counter = 0;
                                 levels[i] += freqMag[j];
-                                counter++;
+                                //counter++;
                             }
                         }
                     }
 
-                    // ADC pot
+                    // ADC pot read
                     uint threshold = adc_read();
                     threshold *= MAX_THRESHOLD / 0xFFF; // ADC reads from 0 to 0xFFF(4095)
 
+
+                    // find moving averages of levels and store them in MALevels
+                    if (loopCounter < MAduration) {
+                        for (int i = 0; i < NUM_STRIPS; i++) {
+                            MALevels[i] = (MALevels[i]*(loopCounter-1) + levels[i]) / (loopCounter);
+                        }
+                    } else {
+                        for (int i = 0; i < NUM_STRIPS; i++) {
+                            MALevels[i] = (MALevels[i]*(MAduration-1) + levels[i]) / (MAduration);
+                        }
+                    }
+
+
+                    // print the values to the serial port
                     for (int i = 0; i < NUM_STRIPS; i++) {
                         levels[i] *= multipliers[i]; // multiply by their respective levels
-                        printf("%u ", levels[i]);
+                        printf("%u ", MALevels[i]);
                     }
                     printf("%u", threshold);
 
@@ -301,17 +328,21 @@ int main() {
 //            avMag += freqMag[i];
 //        }
 //        avMag/=40;
-
+                    uint stripLevels[NUM_STRIPS] = {};
+                    for (int i = 0; i < NUM_STRIPS; i++) {
+                        stripLevels[i] = MALevels[i];
+                    }
                     for (int i = 0; i < NUM_STRIPS; i++) {
                         double div = threshold / LEDS_PER_STRIP;
-                        levels[i] /= div;
-                        (levels[i] > LEDS_PER_STRIP) ? levels[i] = LEDS_PER_STRIP : 0;
-                        (levels[i] < 0) ? levels[i] = 0 : 0; // should never occur
+                        stripLevels[i] /= div;
+                        (stripLevels[i] > LEDS_PER_STRIP) ? stripLevels[i] = LEDS_PER_STRIP : 0;
+                        (stripLevels[i] < 0) ? stripLevels[i] = 0 : 0; // should never occur
                     }
-                    set_strips_level(levels, RED);
+                    set_strips_level(stripLevels, MAGENTA);
 
-                    sleep_us(800);
+                    sleep_us(200);
                     for (int i = 0; i < NUM_STRIPS; i++) {
+                        stripLevels[i] = 0;
                         levels[i] = 0;
                     }
                     loopCounter++;
