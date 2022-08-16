@@ -23,7 +23,7 @@
 #include "tusb.h"
 
 #define LED_STRIP_PIN 16
-#define NUM_LEDS 144
+#define NUM_LEDS 288
 #define LEDS_PER_STRIP 28 // Will be 28 with the full thing // just<20cm
 #define NUM_STRIPS 10 // for now...
 #define nsamples 256
@@ -31,7 +31,11 @@
 uint divisions[10] = {141, 206, 316, 445, 703, 1078, 1570, 2320, 3200};
 #define MAX_THRESHOLD 200000
 //uint thresholds[10] = {100000, 500000, 500000, 500000, 500000, 500000, 500000, 500000, 500000, 500000};
-uint multipliers[10] = {1, 1, 1, 1, 1, 1, 5, 5, 5, 5};
+uint multipliers[10] = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1};
+
+
+#define WHITE            urgb_u32(0XFF, 0xFF, 0xFF)
+#define BLACK            urgb_u32(0x00, 0x00, 0x00)
 
 #define RED              urgb_u32(0xFF, 0x00, 0x00)
 #define VERMILION        urgb_u32(0xFF, 0x40, 0x00)
@@ -150,7 +154,9 @@ enum modes {
     SPECTRUM_ANALYSER = 0,
     VU_METER = 1,
     RAINBOW = 2,
-    RAINBOW_CYCLE = 3
+    RAINBOW_CYCLE = 3,
+    WHITE_FADE_UP = 4,
+    RANDOM_PATTERN = 5
 
 };
 
@@ -181,12 +187,11 @@ int main() {
                          CARMINE};
 
     stdio_init_all();
-    /// PDM MIC SETUP
     // initialize stdio and wait for USB CDC connect
     stdio_init_all();
-    while (!tud_cdc_connected()) {
+/*    while (!tud_cdc_connected()) {
         tight_loop_contents();
-    }
+    }*/
 
     // ADC setup
     adc_init();
@@ -195,24 +200,7 @@ int main() {
 
 
 
-    // initialize the PDM microphone
-    if (pdm_microphone_init(&config) < 0) {
-        printf("PDM microphone initialization failed!\n");
-        while (1) { tight_loop_contents(); }
-    }
-    // set callback that is called when all the samples in the library
-    // internal sample buffer are ready for reading
-    pdm_microphone_set_samples_ready_handler(on_pdm_samples_ready);
-    // start capturing data from the PDM microphone
-    if (pdm_microphone_start() < 0) {
-        printf("PDM microphone start failed!\n");
-        while (1) { tight_loop_contents(); }
-    }
 
-    /// kiss fft setup
-    kiss_fft_scalar fft_in[nsamples];
-    kiss_fft_cpx fft_out[nsamples];
-    kiss_fftr_cfg cfg = kiss_fftr_alloc(nsamples, false, 0, 0);
 
 
 
@@ -226,92 +214,136 @@ int main() {
     sleep_ms(10);
 
     int mode = SPECTRUM_ANALYSER;
+
     uint levels[NUM_STRIPS] = {}; // REMOVE THE *2 when you have 10 strips
     unsigned long long loopCounter = 1;
     while (1) {
         switch (mode) {
             case SPECTRUM_ANALYSER: {
-                // wait for new samples
-                while (samples_read == 0) { tight_loop_contents(); }
-                // store and clear the samples read from the callback
-                int sample_count = samples_read;
-                samples_read = 0;
+                // ****** Setup *******
 
-                double sum = 0;
-                for (int i = 0; i < nsamples; i++) { sum += sample_buffer[i]; }
-                double avg = sum / nsamples;
-                for (int i = 0; i < nsamples; i++) { fft_in[i] = (float) (sample_buffer[i]); }/// remove base frequency
-
-                kiss_fftr(cfg, fft_in, fft_out);
-
-                double freqMag[nsamples / 2] = {};
-                for (int i = 0; i < nsamples / 4; i++) {
-                    freqMag[i] = sqrt(pow(fft_out[i].r, 2) + pow(fft_out[i].i, 2));
-                    if (freqMag[i] !=
-                        0) { freqMag[i] = (freqMag[i]); } // add log scale here if needed /// log does not work as expected
+                // initialize the PDM microphone
+                if (pdm_microphone_init(&config) < 0) {
+                    printf("PDM microphone initialization failed!\n");
+                    while (1) { tight_loop_contents(); }
                 }
-                for (int i = 0; i < 3; i++) { // attenuate the first 3 signals (up to 60HZ)
-                    freqMag[i] = 0;
+                // set callback that is called when all the samples in the library
+                // internal sample buffer are ready for reading
+                pdm_microphone_set_samples_ready_handler(on_pdm_samples_ready);
+                // start capturing data from the PDM microphone
+                if (pdm_microphone_start() < 0) {
+                    printf("PDM microphone start failed!\n");
+                    while (1) { tight_loop_contents(); }
                 }
 
-                // split frequencies into 10 divisions
-                int counter = 0;
-                for (int i = 0; i < 10;) {
-                    for (int j = 0; j < nsamples / 2; j++) {
-                        if (j * 31 < divisions[i]) {
-                            levels[i] += freqMag[j];
-                            counter++;
-                        } else {
-                            levels[i] /= counter;
-                            ++i;
-                            counter = 0;
-                            levels[i] += freqMag[j];
-                            counter++;
+                /// kiss fft setup
+                kiss_fft_scalar fft_in[nsamples];
+                kiss_fft_cpx fft_out[nsamples];
+                kiss_fftr_cfg cfg = kiss_fftr_alloc(nsamples, false, 0, 0);
+
+
+                // ******  Loop *******
+                while (1) {
+                    // wait for new samples
+                    while (samples_read == 0) { tight_loop_contents(); }
+                    // store and clear the samples read from the callback
+                    int sample_count = samples_read;
+                    samples_read = 0;
+
+                    double sum = 0;
+                    for (int i = 0; i < nsamples; i++) { sum += sample_buffer[i]; }
+                    double avg = sum / nsamples;
+                    for (int i = 0;
+                         i < nsamples; i++) { fft_in[i] = (float) (sample_buffer[i]); }/// remove base frequency
+
+                    kiss_fftr(cfg, fft_in, fft_out);
+
+                    double freqMag[nsamples / 2] = {};
+                    for (int i = 0; i < nsamples / 4; i++) {
+                        freqMag[i] = sqrt(pow(fft_out[i].r, 2) + pow(fft_out[i].i, 2));
+                        if (freqMag[i] !=
+                            0) { freqMag[i] = (freqMag[i]); } // add log scale here if needed /// log does not work as expected
+                    }
+                    for (int i = 0; i < 3; i++) { // attenuate the first 3 signals (up to 60HZ)
+                        freqMag[i] = 0;
+                    }
+
+                    // split frequencies into 10 divisions
+                    int counter = 0;
+                    for (int i = 0; i < 10;) {
+                        for (int j = 0; j < nsamples / 2; j++) {
+                            if (j * 31 < divisions[i]) {
+                                levels[i] += freqMag[j];
+                                counter++;
+                            } else {
+                                levels[i] /= counter;
+                                ++i;
+                                counter = 0;
+                                levels[i] += freqMag[j];
+                                counter++;
+                            }
                         }
                     }
-                }
 
+                    // ADC pot
+                    uint threshold = adc_read();
+                    threshold *= MAX_THRESHOLD / 0xFFF; // ADC reads from 0 to 0xFFF(4095)
 
-                // ADC pot
-                uint threshold = adc_read();
-                threshold *= MAX_THRESHOLD / 0xFFF; // ADC reads from 0 to 0xFFF(4095)
+                    for (int i = 0; i < NUM_STRIPS; i++) {
+                        levels[i] *= multipliers[i]; // multiply by their respective levels
+                        printf("%u ", levels[i]);
+                    }
+                    printf("%u", threshold);
 
-                for (int i = 0; i < NUM_STRIPS; i++) {
-                    levels[i] *= multipliers[i]; // multiply by their respective levels
-                    printf("%u ", levels[i]);
-                }
-                printf("%u", threshold);
-
-                printf("\n");
+                    printf("\n");
 //        uint avMag = 0;
 //        for (int i=0;i<40;i++) {
 //            avMag += freqMag[i];
 //        }
 //        avMag/=40;
 
-                for (int i = 0; i < NUM_STRIPS; i++) {
-                    double div = threshold / LEDS_PER_STRIP;
-                    levels[i] /= div;
-                    (levels[i] > LEDS_PER_STRIP) ? levels[i] = LEDS_PER_STRIP : 0;
-                    (levels[i] < 0) ? levels[i] = 0 : 0; // should never occur
-                }
-                set_strips_level(levels, RED);
+                    for (int i = 0; i < NUM_STRIPS; i++) {
+                        double div = threshold / LEDS_PER_STRIP;
+                        levels[i] /= div;
+                        (levels[i] > LEDS_PER_STRIP) ? levels[i] = LEDS_PER_STRIP : 0;
+                        (levels[i] < 0) ? levels[i] = 0 : 0; // should never occur
+                    }
+                    set_strips_level(levels, RED);
 
-                sleep_us(800);
-                for (int i = 0; i < NUM_STRIPS; i++) {
-                    levels[i] = 0;
+                    sleep_us(800);
+                    for (int i = 0; i < NUM_STRIPS; i++) {
+                        levels[i] = 0;
+                    }
+                    loopCounter++;
+                    if (mode != SPECTRUM_ANALYSER) {
+                        kiss_fft_free(cfg); // will never get here
+                        break;
+                    }
                 }
-                loopCounter++;
+                break;
             }
-            case VU_METER: {}
-            case RAINBOW: {
+            case WHITE_FADE_UP: {
+                // needs refining.
+                int white_fade_up_brightness = 0;
+                int white_fade_up_level = 1;
+                int counter = 0;
+                while (1) {
+                    for (int i=0;i<white_fade_up_level;i++) {
+                        put_pixel(urgb_u32(white_fade_up_brightness, white_fade_up_brightness, white_fade_up_brightness));
+                    }
+                    printf("%u\n", white_fade_up_level);
+                    if (white_fade_up_level < NUM_LEDS) white_fade_up_level++;
+                    if (white_fade_up_brightness <= 100 & counter % 5 == 0) white_fade_up_brightness++;
+                    sleep_ms(5);
+                    counter++;
+                }
+                break;
+            }
 
-            }
         }
 
 
 
         // Cleanup, will never get here.
-        kiss_fft_free(cfg); // will never get here
     }
 }
