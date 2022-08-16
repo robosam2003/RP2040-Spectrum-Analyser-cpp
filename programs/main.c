@@ -19,22 +19,47 @@
 #include "pico/stdlib.h"
 #include "pico/pdm_microphone.h"
 #include "pdm_microphone.pio.h"
+#include "hardware/adc.h"
 #include "tusb.h"
 
 #define LED_STRIP_PIN 16
 #define NUM_LEDS 144
-#define LEDS_PER_STRIP 14 // Will be 28 with the full thing // just<20cm
+#define LEDS_PER_STRIP 28 // Will be 28 with the full thing // just<20cm
 #define NUM_STRIPS 10 // for now...
 #define nsamples 256
 #define pi 3.14159265358979323846
-uint divisions[10] = {141, 206, 316, 445, 703, 1078, 1570, 2320, 3281};
-#define UPPER_THRESHOLD 20000
-#define LONG_MA_PERIOD 128
-#define SHORT_MA_PERIOD 20
+uint divisions[10] = {141, 206, 316, 445, 703, 1078, 1570, 2320, 3200};
+#define MAX_THRESHOLD 200000
+//uint thresholds[10] = {100000, 500000, 500000, 500000, 500000, 500000, 500000, 500000, 500000, 500000};
+uint multipliers[10] = {1, 1, 1, 1, 1, 1, 5, 5, 5, 5};
 
-#define RED urgb_u32(255, 0, 0)
-#define YELLOW urgb_u32(255, 255, 0)
-#define PURPLE urgb_u32(255, 0, 255)
+#define RED              urgb_u32(0xFF, 0x00, 0x00)
+#define VERMILION        urgb_u32(0xFF, 0x40, 0x00)
+#define ORANGE           urgb_u32(0xFF, 0x80, 0x00)
+#define YELLOW           urgb_u32(0xFF, 0xFF, 0x00)
+#define YELLOWGREEN      urgb_u32(0xBF, 0xFF, 0x00)
+#define CHARTREUSE       urgb_u32(0x80, 0xFF, 0x00)
+#define LEAFGREEN        urgb_u32(0x40, 0xFF, 0x00)
+#define GREEN            urgb_u32(0x00, 0xFF, 0x00)
+#define COBALTGREEN      urgb_u32(0x00, 0xFF, 0x40)
+#define EMERALD          urgb_u32(0x00, 0xFF, 0x80)
+#define TURQUOISEGREEN   urgb_u32(0x00, 0xFF, 0xBF)
+#define TURQUOISEBLUE    urgb_u32(0x00, 0xFF, 0xFF)
+#define CERULEAN         urgb_u32(0x00, 0xBF, 0xFF)
+#define AZURE            urgb_u32(0x00, 0x80, 0xFF)
+#define COBALTBLUE       urgb_u32(0x00, 0x40, 0xFF)
+#define BLUE             urgb_u32(0x00, 0x00, 0xFF)
+#define HYACINTH         urgb_u32(0x40, 0x00, 0xFF)
+#define VIOLET           urgb_u32(0x80, 0x00, 0xFF)
+#define PURPLE           urgb_u32(0xBF, 0x00, 0xFF)
+#define MAGENTA          urgb_u32(0xFF, 0x00, 0xFF)
+#define REDPURPLE        urgb_u32(0xFF, 0x00, 0xBF)
+#define CRIMSON          urgb_u32(0xFF, 0x00, 0x80)
+#define CARMINE          urgb_u32(0xFF, 0x00, 0x40)
+
+
+
+
 
 
 /* my attempt at an fft - failed miserably due to memory constraints - using kiss_fft instead
@@ -105,7 +130,7 @@ void clear_strip(){
     }
 }
 
-void set_strips_level(unsigned long long levels[], uint32_t colour) {// levels range from 0 to 28.
+void set_strips_level(uint levels[], uint32_t colour) {// levels range from 0 to 28.
     for (int i=0;i<NUM_STRIPS;i++) {
         for (int j=0;j<levels[i];j++) {
             put_pixel(colour);
@@ -121,7 +146,40 @@ int map(int val, int in_min, int in_max, int out_min, int out_max) {
     return (int)((val - in_min) * (out_max - out_min) / (in_max - in_min) + out_min);
 }
 
+enum modes {
+    SPECTRUM_ANALYSER = 0,
+    VU_METER = 1,
+    RAINBOW = 2,
+    RAINBOW_CYCLE = 3
+
+};
+
+
 int main() {
+    int hueColors[24] = {RED,
+                         VERMILION,
+                         ORANGE,
+                         YELLOW,
+                         YELLOWGREEN,
+                         CHARTREUSE,
+                         LEAFGREEN,
+                         GREEN,
+                         COBALTGREEN,
+                         EMERALD,
+                         TURQUOISEGREEN,
+                         TURQUOISEBLUE,
+                         CERULEAN,
+                         AZURE,
+                         COBALTBLUE,
+                         BLUE,
+                         HYACINTH,
+                         VIOLET,
+                         PURPLE,
+                         MAGENTA,
+                         REDPURPLE,
+                         CRIMSON,
+                         CARMINE};
+
     stdio_init_all();
     /// PDM MIC SETUP
     // initialize stdio and wait for USB CDC connect
@@ -129,6 +187,14 @@ int main() {
     while (!tud_cdc_connected()) {
         tight_loop_contents();
     }
+
+    // ADC setup
+    adc_init();
+    adc_gpio_init(26);
+    adc_select_input(0);
+
+
+
     // initialize the PDM microphone
     if (pdm_microphone_init(&config) < 0) {
         printf("PDM microphone initialization failed!\n");
@@ -152,111 +218,100 @@ int main() {
 
 
     /// LED STRIP SETUP
-    uint offset2= pio_add_program(pio1, &ws2812_program);
+    uint offset2 = pio_add_program(pio1, &ws2812_program);
     uint sm2 = pio_claim_unused_sm(pio1, true);
     ws2812_program_init(pio1, sm2, offset2, LED_STRIP_PIN, 800000, false);
 
     clear_strip();
     sleep_ms(10);
 
-    unsigned long long longMA[NUM_STRIPS] = {};
-    unsigned long long shortMA[NUM_STRIPS] = {};
-
+    int mode = SPECTRUM_ANALYSER;
     uint levels[NUM_STRIPS] = {}; // REMOVE THE *2 when you have 10 strips
     unsigned long long loopCounter = 1;
     while (1) {
-        // wait for new samples
-        while (samples_read == 0) { tight_loop_contents(); }
-        // store and clear the samples read from the callback
-        int sample_count = samples_read;
-        samples_read = 0;
+        switch (mode) {
+            case SPECTRUM_ANALYSER: {
+                // wait for new samples
+                while (samples_read == 0) { tight_loop_contents(); }
+                // store and clear the samples read from the callback
+                int sample_count = samples_read;
+                samples_read = 0;
 
-        double sum = 0;
-        for (int i = 0; i < nsamples; i++) { sum += sample_buffer[i]; }
-        double avg = sum / nsamples;
-        for (int i = 0; i < nsamples; i++) { fft_in[i] = (float) (sample_buffer[i]); }/// remove base frequency
+                double sum = 0;
+                for (int i = 0; i < nsamples; i++) { sum += sample_buffer[i]; }
+                double avg = sum / nsamples;
+                for (int i = 0; i < nsamples; i++) { fft_in[i] = (float) (sample_buffer[i]); }/// remove base frequency
 
-        kiss_fftr(cfg, fft_in, fft_out);
+                kiss_fftr(cfg, fft_in, fft_out);
 
-        unsigned long long freqMag[nsamples / 2] = {};
-        for (int i = 0; i < nsamples / 4; i++) {
-            freqMag[i] = sqrt(pow(fft_out[i].r, 2) + pow(fft_out[i].i, 2));
-            if (freqMag[i] != 0) { freqMag[i] = (freqMag[i]); } // add log scale here if needed
-        }
-        for (int i=0;i<3;i++) { // attenuate the first 3 signals (up to 60HZ)
-            freqMag[i] = 0;
-        }
-
-        // split frequencies into 10 divisions
-        int counter = 0;
-        for (int i=0;i<10;){
-            for (int j=0;j<nsamples/2;j++) {
-                if (j*31 < divisions[i]) {
-                    levels[i] += freqMag[j];
-                    counter++;
+                double freqMag[nsamples / 2] = {};
+                for (int i = 0; i < nsamples / 4; i++) {
+                    freqMag[i] = sqrt(pow(fft_out[i].r, 2) + pow(fft_out[i].i, 2));
+                    if (freqMag[i] !=
+                        0) { freqMag[i] = (freqMag[i]); } // add log scale here if needed /// log does not work as expected
                 }
-                else {
-                    levels[i] /= counter;
-                    ++i;
-                    counter = 0;
-                    levels[i] += freqMag[j];
-                    counter++;
+                for (int i = 0; i < 3; i++) { // attenuate the first 3 signals (up to 60HZ)
+                    freqMag[i] = 0;
                 }
-            }
-        }
-        /// SHORT MA
-        if (loopCounter<SHORT_MA_PERIOD){
-            for (int i=0; i<NUM_STRIPS;i++) {
-                shortMA[i] += levels[i];
-                shortMA[i] /= loopCounter;
-            }
-        }
-        else {
-            for (int i=0; i<NUM_STRIPS;i++) {
-                shortMA[i] = (shortMA[i]*SHORT_MA_PERIOD +  levels[i]) / (SHORT_MA_PERIOD+1);
-            }
-        }
 
-        /// LONG MA
-        if (loopCounter<LONG_MA_PERIOD){
-            for (int i=0; i<NUM_STRIPS;i++) {
-                longMA[i] += levels[i];
-                longMA[i] /= loopCounter;
-            }
-        }
-        else {
-            for (int i=0; i<NUM_STRIPS;i++) {
-                longMA[i] = (longMA[i]*LONG_MA_PERIOD +  levels[i]) / (LONG_MA_PERIOD+1);
-            }
-        }
+                // split frequencies into 10 divisions
+                int counter = 0;
+                for (int i = 0; i < 10;) {
+                    for (int j = 0; j < nsamples / 2; j++) {
+                        if (j * 31 < divisions[i]) {
+                            levels[i] += freqMag[j];
+                            counter++;
+                        } else {
+                            levels[i] /= counter;
+                            ++i;
+                            counter = 0;
+                            levels[i] += freqMag[j];
+                            counter++;
+                        }
+                    }
+                }
 
-        for (int i=0;i<NUM_STRIPS;i++) {
-            printf("%llu ", shortMA [i]);
-        }
 
-        printf("\n");
+                // ADC pot
+                uint threshold = adc_read();
+                threshold *= MAX_THRESHOLD / 0xFFF; // ADC reads from 0 to 0xFFF(4095)
+
+                for (int i = 0; i < NUM_STRIPS; i++) {
+                    levels[i] *= multipliers[i]; // multiply by their respective levels
+                    printf("%u ", levels[i]);
+                }
+                printf("%u", threshold);
+
+                printf("\n");
 //        uint avMag = 0;
 //        for (int i=0;i<40;i++) {
 //            avMag += freqMag[i];
 //        }
 //        avMag/=40;
 
-        for(int i=0;i<NUM_STRIPS;i++) {
-            double div = UPPER_THRESHOLD / LEDS_PER_STRIP;
-            shortMA[i] /= div;
-            (shortMA[i] > LEDS_PER_STRIP) ? shortMA[i]=LEDS_PER_STRIP : 0;
-            (shortMA[i] < 0) ? shortMA[i] = 0 : 0; // should never occur
-        }
-        set_strips_level(shortMA, PURPLE);
+                for (int i = 0; i < NUM_STRIPS; i++) {
+                    double div = threshold / LEDS_PER_STRIP;
+                    levels[i] /= div;
+                    (levels[i] > LEDS_PER_STRIP) ? levels[i] = LEDS_PER_STRIP : 0;
+                    (levels[i] < 0) ? levels[i] = 0 : 0; // should never occur
+                }
+                set_strips_level(levels, RED);
 
-        sleep_us(400);
-        for (int i=0;i<NUM_STRIPS;i++) {
-            levels[i] = 0;
+                sleep_us(800);
+                for (int i = 0; i < NUM_STRIPS; i++) {
+                    levels[i] = 0;
+                }
+                loopCounter++;
+            }
+            case VU_METER: {}
+            case RAINBOW: {
+
+            }
         }
-        loopCounter++;
+
+
+
+        // Cleanup, will never get here.
+        kiss_fft_free(cfg); // will never get here
     }
-
-    kiss_fft_free(cfg); // will never get here
-
 }
-
