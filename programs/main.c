@@ -1,11 +1,6 @@
 /*
- * Copyright (c) 2021 Arm Limited and Contributors. All rights reserved.
  *
- * SPDX-License-Identifier: Apache-2.0
  *
- * This examples captures data from a PDM microphone using a sample
- * rate of 8 kHz and prints the sample values over the USB serial
- * connection.
 */
 
 
@@ -20,7 +15,10 @@
 #include "pico/pdm_microphone.h"
 #include "pdm_microphone.pio.h"
 #include "hardware/adc.h"
+#include "hardware/irq.h"
 #include "tusb.h"
+#include "pico/multicore.h"
+
 
 #define LED_STRIP_PIN 16
 #define NUM_LEDS 288
@@ -28,7 +26,14 @@
 #define NUM_STRIPS 12 // for now...
 #define nsamples 256
 #define pi 3.14159265358979323846
-uint divisions[NUM_STRIPS] = {121,
+
+#define COLOUR_BUTTON_PIN 6 // GP6
+#define MODE_BUTTON_PIN 13 // GP13
+
+int selectedColour = 0;
+int selectedMode = 1;
+
+double divisions[NUM_STRIPS] = {121,
                               147,
                               178,
                               215,
@@ -39,14 +44,21 @@ uint divisions[NUM_STRIPS] = {121,
                               562,
                               699,
                               825,
-                              1000};
+                              1000}; // 100-1000Hz, recalculated later
+
+#define LOWER_FREQ_LIMIT 100
+#define UPPER_FREQ_LIMIT 2000
+
+
+
+
 #define MAX_THRESHOLD 1000000
 //uint thresholds[10] = {100000, 500000, 500000, 500000, 500000, 500000, 500000, 500000, 500000, 500000};
 uint multipliers[12] = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1};
 
 
 uint MALevels[12] = {};
-#define MAduration 10
+#define MAduration 4
 
 #define WHITE            urgb_u32(0XFF, 0xFF, 0xFF)
 #define BLACK            urgb_u32(0x00, 0x00, 0x00)
@@ -150,11 +162,32 @@ void clear_strip(){
 
 void set_strips_level(uint levels[], uint32_t colour) {// levels range from 0 to 28.
     for (int i=0;i<NUM_STRIPS;i++) {
-        for (int j=0;j<levels[i];j++) {
-            put_pixel(colour);
+        if (i == 0) {
+            if (levels[0] == LEDS_PER_STRIP) {
+                levels[0] -= 1; // hardware issue.
+            }
+            for (int j = 0; j < levels[i]; j++) {
+                put_pixel(colour);
+            }
+            for (int j = 0; j < (LEDS_PER_STRIP - 1 - levels[i]); j++) {
+                put_pixel(0); // black
+            }
         }
-        for (int j=0;j<(LEDS_PER_STRIP-levels[i]);j++) {
-            put_pixel(0); // black
+        else if (i%2 == 0) {
+            for (int j = 0; j < levels[i]; j++) {
+                put_pixel(colour);
+            }
+            for (int j = 0; j < (LEDS_PER_STRIP - levels[i]); j++) {
+                put_pixel(0); // black
+            }
+        }
+        else {
+            for (int j = 0; j < (LEDS_PER_STRIP - levels[i]); j++) {
+                put_pixel(0); // black
+            }
+            for (int j = 0; j < levels[i]; j++) {
+                put_pixel(colour);
+            }
         }
     }
     //sleep_us(500);
@@ -164,18 +197,45 @@ int map(int val, int in_min, int in_max, int out_min, int out_max) {
     return (int)((val - in_min) * (out_max - out_min) / (in_max - in_min) + out_min);
 }
 
+
 enum modes {
-    SPECTRUM_ANALYSER = 0,
-    VU_METER = 1,
-    RAINBOW = 2,
-    RAINBOW_CYCLE = 3,
-    WHITE_FADE_UP = 4,
-    RANDOM_PATTERN = 5
+
+    CONSTANT = 0,
+    SPECTRUM_ANALYSER = 1,
 
 };
 
+void calcDivisions() {
+    for (int i=1;i<=NUM_STRIPS;) {
+
+        double low = log10(LOWER_FREQ_LIMIT);
+        double div = pow(10, (low + (i * (log10(UPPER_FREQ_LIMIT) - low)) / NUM_STRIPS    )    );
+        divisions[i-1] = div;
+        i++;
+    }
+}
+
+
+void colour_button_callback() {
+    selectedColour++;
+    selectedColour = selectedColour % 24;
+}
+
+void mode_button_callback() {
+    selectedMode++;
+    selectedMode = selectedMode % 2;
+}
+
+void core1_entry() {
+    gpio_set_irq_enabled_with_callback(MODE_BUTTON_PIN, GPIO_IRQ_EDGE_RISE, true, &mode_button_callback);
+    while(1) {
+        tight_loop_contents();
+    }
+
+}
 
 int main() {
+    sleep_ms(5000);
     int hueColors[24] = {RED,
                          VERMILION,
                          ORANGE,
@@ -198,7 +258,9 @@ int main() {
                          MAGENTA,
                          REDPURPLE,
                          CRIMSON,
-                         CARMINE};
+                         CARMINE,
+                         WHITE};
+
 
     stdio_init_all();
     // initialize stdio and wait for USB CDC connect
@@ -212,8 +274,10 @@ int main() {
     adc_gpio_init(26);
     adc_select_input(0);
 
+    multicore_launch_core1(core1_entry);
 
 
+    gpio_set_irq_enabled_with_callback(COLOUR_BUTTON_PIN, GPIO_IRQ_EDGE_RISE, true, &colour_button_callback);
 
 
 
@@ -227,15 +291,25 @@ int main() {
     clear_strip();
     sleep_ms(10);
 
-    int mode = SPECTRUM_ANALYSER;
+
 
     uint levels[NUM_STRIPS] = {};
     unsigned long long loopCounter = 1;
     while (1) {
-        switch (mode) {
+        switch (selectedMode) {
+            case CONSTANT: {
+                for (int i=0; i<NUM_STRIPS;i++){
+                    levels[i] = LEDS_PER_STRIP;
+                }
+                set_strips_level(levels, hueColors[selectedColour]);
+                loopCounter++;
+                sleep_ms(100);
+                break;
+            }
+
             case SPECTRUM_ANALYSER: {
                 // ****** Setup *******
-
+                calcDivisions();
                 // initialize the PDM microphone
                 if (pdm_microphone_init(&config) < 0) {
                     printf("PDM microphone initialization failed!\n");
@@ -297,7 +371,6 @@ int main() {
                             }
                         }
                     }
-
                     // ADC pot read
                     uint threshold = adc_read();
                     threshold *= MAX_THRESHOLD / 0xFFF; // ADC reads from 0 to 0xFFF(4095)
@@ -323,11 +396,7 @@ int main() {
                     printf("%u", threshold);
 
                     printf("\n");
-//        uint avMag = 0;
-//        for (int i=0;i<40;i++) {
-//            avMag += freqMag[i];
-//        }
-//        avMag/=40;
+
                     uint stripLevels[NUM_STRIPS] = {};
                     for (int i = 0; i < NUM_STRIPS; i++) {
                         stripLevels[i] = MALevels[i];
@@ -338,7 +407,7 @@ int main() {
                         (stripLevels[i] > LEDS_PER_STRIP) ? stripLevels[i] = LEDS_PER_STRIP : 0;
                         (stripLevels[i] < 0) ? stripLevels[i] = 0 : 0; // should never occur
                     }
-                    set_strips_level(stripLevels, MAGENTA);
+                    set_strips_level(stripLevels, hueColors[selectedColour]);
 
                     sleep_us(200);
                     for (int i = 0; i < NUM_STRIPS; i++) {
@@ -346,30 +415,30 @@ int main() {
                         levels[i] = 0;
                     }
                     loopCounter++;
-                    if (mode != SPECTRUM_ANALYSER) {
+                    if (selectedMode != SPECTRUM_ANALYSER) {
                         kiss_fft_free(cfg); // will never get here
                         break;
                     }
                 }
                 break;
             }
-            case WHITE_FADE_UP: {
-                // needs refining.
-                int white_fade_up_brightness = 0;
-                int white_fade_up_level = 1;
-                int counter = 0;
-                while (1) {
-                    for (int i=0;i<white_fade_up_level;i++) {
-                        put_pixel(urgb_u32(white_fade_up_brightness, white_fade_up_brightness, white_fade_up_brightness));
-                    }
-                    printf("%u\n", white_fade_up_level);
-                    if (white_fade_up_level < NUM_LEDS) white_fade_up_level++;
-                    if (white_fade_up_brightness <= 100 & counter % 5 == 0) white_fade_up_brightness++;
-                    sleep_ms(5);
-                    counter++;
-                }
-                break;
-            }
+//            case WHITE_FADE_UP: {
+//                // needs refining.
+//                int white_fade_up_brightness = 0;
+//                int white_fade_up_level = 1;
+//                int counter = 0;
+//                while (1) {
+//                    for (int i=0;i<white_fade_up_level;i++) {
+//                        put_pixel(urgb_u32(white_fade_up_brightness, white_fade_up_brightness, white_fade_up_brightness));
+//                    }
+//                    printf("%u\n", white_fade_up_level);
+//                    if (white_fade_up_level < NUM_LEDS) white_fade_up_level++;
+//                    if (white_fade_up_brightness <= 100 & counter % 5 == 0) white_fade_up_brightness++;
+//                    sleep_ms(5);
+//                    counter++;
+//                }
+//                break;
+//            }
 
         }
 
