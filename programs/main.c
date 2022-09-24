@@ -31,7 +31,7 @@
 #define MODE_BUTTON_PIN 13 // GP13
 
 int selectedColour = 0;
-int selectedMode = 1;
+int selectedMode = 0; // starts on sunrise
 
 double divisions[NUM_STRIPS] = {121,
                               147,
@@ -160,7 +160,68 @@ void clear_strip(){
     }
 }
 
+
+
+int map(int val, int in_min, int in_max, int out_min, int out_max) {
+    return (int)((val - in_min) * (out_max - out_min) / (in_max - in_min) + out_min);
+}
+
+
+enum modes {
+    SUNRISE = 0,
+    SPECTRUM_ANALYSER = 1,
+    CONSTANT = 2
+};
+
+void calcDivisions() {
+    for (int i=1;i<=NUM_STRIPS;) {
+
+        double low = log10(LOWER_FREQ_LIMIT);
+        double div = pow(10, (low + (i * (log10(UPPER_FREQ_LIMIT) - low)) / NUM_STRIPS    )    );
+        divisions[i-1] = div;
+        i++;
+    }
+}
+
+
+unsigned long time;
+const int debounce_delay = 500000; // us
+
+
+
+void colour_button_callback() {
+    selectedColour++;
+    selectedColour = selectedColour % 24;
+}
+
+void mode_button_callback() {
+    selectedMode++;
+    selectedMode = selectedMode % 3;
+}
+
+void gpio_callback(uint gpio, uint32_t events) {
+    uint64_t now = time_us_64();
+    if ((now - time) > debounce_delay) {
+        time = time_us_64();
+
+        if (gpio == COLOUR_BUTTON_PIN) {
+            colour_button_callback();
+        } else if (gpio == MODE_BUTTON_PIN) {
+            mode_button_callback();
+        }
+    }
+}
+
+/*void core1_entry() {
+    gpio_set_irq_enabled_with_callback(MODE_BUTTON_PIN, GPIO_IRQ_EDGE_RISE, true, &mode_button_callback);
+    while(1) {
+        tight_loop_contents();
+    }
+
+}*/
+
 void set_strips_level(uint levels[], uint32_t colour) {// levels range from 0 to 28.
+
     for (int i=0;i<NUM_STRIPS;i++) {
         if (i == 0) {
             if (levels[0] == LEDS_PER_STRIP) {
@@ -193,48 +254,44 @@ void set_strips_level(uint levels[], uint32_t colour) {// levels range from 0 to
     //sleep_us(500);
 }
 
-int map(int val, int in_min, int in_max, int out_min, int out_max) {
-    return (int)((val - in_min) * (out_max - out_min) / (in_max - in_min) + out_min);
-}
 
+void set_strips_levels_colours(int stripColours[NUM_STRIPS][LEDS_PER_STRIP]) {
+    for (int i=0; i<NUM_STRIPS; i++) {
+        if (i==0) {
+            for (int j=0; j<LEDS_PER_STRIP-1; j++) { // -1 because the first strip has one less (sigh)
+                put_pixel(stripColours[i][j]);
+            }
+        }
 
-enum modes {
+        else if (i%2 == 0) {
+            for (int j=0; j<LEDS_PER_STRIP; j++) {
+                put_pixel(stripColours[i][j]);
+            }
+        }
 
-    CONSTANT = 0,
-    SPECTRUM_ANALYSER = 1,
+        else {
+            for (int j=0; j<LEDS_PER_STRIP; j++) {
+                put_pixel(stripColours[i][LEDS_PER_STRIP-j-1]);
+            }
+        }
 
-};
-
-void calcDivisions() {
-    for (int i=1;i<=NUM_STRIPS;) {
-
-        double low = log10(LOWER_FREQ_LIMIT);
-        double div = pow(10, (low + (i * (log10(UPPER_FREQ_LIMIT) - low)) / NUM_STRIPS    )    );
-        divisions[i-1] = div;
-        i++;
     }
 }
 
-
-void colour_button_callback() {
-    selectedColour++;
-    selectedColour = selectedColour % 24;
-}
-
-void mode_button_callback() {
-    selectedMode++;
-    selectedMode = selectedMode % 2;
-}
-
-void core1_entry() {
-    gpio_set_irq_enabled_with_callback(MODE_BUTTON_PIN, GPIO_IRQ_EDGE_RISE, true, &mode_button_callback);
-    while(1) {
-        tight_loop_contents();
-    }
-
+uint32_t change_brightness(uint32_t colour, uint32_t percentage) {
+    uint8_t r, g, b;
+    b = colour & 0xFF;
+    r = (colour >> 8) & 0xFF;
+    g = (colour >> 16) & 0xFF;
+    b *= percentage / 100;
+    r *= percentage / 100;
+    g *= percentage / 100;
+    uint32_t ret = ( ((uint32_t) (r) << 8) | ((uint32_t) (g) << 16) | (uint32_t) b );
+    return ret;
 }
 
 int main() {
+    time = time_us_64();
     sleep_ms(5000);
     int hueColors[24] = {RED,
                          VERMILION,
@@ -261,6 +318,12 @@ int main() {
                          CARMINE,
                          WHITE};
 
+    int sunriseColours[6] = {urgb_u32(0xFF, 0x00, 0x00),
+                             urgb_u32(0xFF, 0x4D, 0x00), // bottom
+                             urgb_u32(0xFF, 0x67, 0x00),
+                             urgb_u32(0xFF, 0x81, 0x00),
+                             urgb_u32(0xFF, 0xa7, 0x00),
+                             urgb_u32(0xFF, 0xE7, 0x00)}; // top
 
     stdio_init_all();
     // initialize stdio and wait for USB CDC connect
@@ -274,10 +337,13 @@ int main() {
     adc_gpio_init(26);
     adc_select_input(0);
 
-    multicore_launch_core1(core1_entry);
+
+    //multicore_launch_core1(core1_entry);
 
 
-    gpio_set_irq_enabled_with_callback(COLOUR_BUTTON_PIN, GPIO_IRQ_EDGE_RISE, true, &colour_button_callback);
+    // INTERRUPTS
+    gpio_set_irq_enabled_with_callback(COLOUR_BUTTON_PIN, GPIO_IRQ_EDGE_RISE, true, &gpio_callback);
+    gpio_set_irq_enabled(MODE_BUTTON_PIN, GPIO_IRQ_EDGE_RISE, true);
 
 
 
@@ -297,6 +363,42 @@ int main() {
     unsigned long long loopCounter = 1;
     while (1) {
         switch (selectedMode) {
+            case SUNRISE: {
+                bool done = false;
+                int level = 0;
+                int stripsColours[NUM_STRIPS][LEDS_PER_STRIP] = {0};
+                int delay_ms = 100;
+                if (!done) {
+                    for (int i = 0; i < 6; i++) { // colour
+                        for (int k = 0; k < 4; k++) {
+                            for (int j = 0; j < NUM_STRIPS; j++) {
+                                //uint32_t altered = change_brightness(sunriseColours[i], 50);
+                                stripsColours[j][level] = sunriseColours[i] ;
+                            }
+                            set_strips_levels_colours(stripsColours);
+                            sleep_ms(delay_ms);
+
+                            level++;
+                        }
+
+                    }
+//                for (int i=0; i<NUM_STRIPS;i++){
+//                    levels[i] = LEDS_PER_STRIP;
+//                }
+//                set_strips_level(levels, sunriseColours[1]);
+                    loopCounter++;
+                    sleep_ms(100);
+                    done = true;
+                }
+                while(1){
+                    if (selectedMode != SUNRISE) {
+                        break;
+                    }
+                    sleep_ms(100);
+                }
+                break;
+            }
+
             case CONSTANT: {
                 for (int i=0; i<NUM_STRIPS;i++){
                     levels[i] = LEDS_PER_STRIP;
@@ -439,8 +541,11 @@ int main() {
 //                }
 //                break;
 //            }
-
+            default:
+                selectedMode = 0;
+                break;
         }
+
 
 
 
