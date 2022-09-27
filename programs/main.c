@@ -89,7 +89,7 @@ uint MALevels[12] = {};
 
 
 
-
+#define RAINBOW 1 // just for an enum.
 
 
 /* my attempt at an fft - failed miserably due to memory constraints - using kiss_fft instead
@@ -222,13 +222,26 @@ void gpio_callback(uint gpio, uint32_t events) {
 
 void set_strips_level(uint levels[], uint32_t colour) {// levels range from 0 to 28.
 
+    int rainbow_hue_index[NUM_STRIPS] = {RED,
+                                         ORANGE,
+                                         YELLOW,
+                                         YELLOWGREEN,
+                                         GREEN,
+                                         COBALTGREEN,
+                                         TURQUOISEGREEN,
+                                         BLUE,
+                                         VIOLET,
+                                         PURPLE,
+                                         MAGENTA,
+                                         REDPURPLE
+    };
     for (int i=0;i<NUM_STRIPS;i++) {
         if (i == 0) {
             if (levels[0] == LEDS_PER_STRIP) {
                 levels[0] -= 1; // hardware issue.
             }
             for (int j = 0; j < levels[i]; j++) {
-                put_pixel(colour);
+                (colour == RAINBOW) ? put_pixel(rainbow_hue_index[i]) : put_pixel(colour);
             }
             for (int j = 0; j < (LEDS_PER_STRIP - 1 - levels[i]); j++) {
                 put_pixel(0); // black
@@ -236,7 +249,7 @@ void set_strips_level(uint levels[], uint32_t colour) {// levels range from 0 to
         }
         else if (i%2 == 0) {
             for (int j = 0; j < levels[i]; j++) {
-                put_pixel(colour);
+                (colour == RAINBOW) ? put_pixel(rainbow_hue_index[i]) : put_pixel(colour);
             }
             for (int j = 0; j < (LEDS_PER_STRIP - levels[i]); j++) {
                 put_pixel(0); // black
@@ -247,7 +260,7 @@ void set_strips_level(uint levels[], uint32_t colour) {// levels range from 0 to
                 put_pixel(0); // black
             }
             for (int j = 0; j < levels[i]; j++) {
-                put_pixel(colour);
+                (colour == RAINBOW) ? put_pixel(rainbow_hue_index[i]) : put_pixel(colour);
             }
         }
     }
@@ -293,7 +306,8 @@ uint32_t change_brightness(uint32_t colour, uint32_t percentage) {
 int main() {
     time = time_us_64();
     sleep_ms(5000);
-    int hueColors[24] = {RED,
+    int hueColors[25] = {RAINBOW,
+                         RED,
                          VERMILION,
                          ORANGE,
                          YELLOW,
@@ -361,6 +375,7 @@ int main() {
 
     uint levels[NUM_STRIPS] = {};
     unsigned long long loopCounter = 1;
+
     while (1) {
         switch (selectedMode) {
             case SUNRISE: {
@@ -405,7 +420,8 @@ int main() {
                 }
                 set_strips_level(levels, hueColors[selectedColour]);
                 loopCounter++;
-                sleep_ms(100);
+                sleep_ms(200);
+
                 break;
             }
 
