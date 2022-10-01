@@ -5,9 +5,11 @@ This project uses 288 WS2812B (Neopixel) LEDs, a PDM microphone and a Raspberry 
 <img src = "https://github.com/robosam2003/RP2040-Spectrum-Analyser-cpp/blob/main/resources/spectrumAnalyser1.gif">
 
 The Pico, microphone, mode and colour selection buttons, as well as a sensitivity knob are housed in a 3D printed case:
+
 <img src = "https://github.com/robosam2003/RP2040-Spectrum-Analyser-cpp/blob/main/resources/IMG_20220924_215021.jpg" width = 400>
 
 while the LEDS are stuck to the wall with double-sided tape /:)
+
 <img src = "https://github.com/robosam2003/RP2040-Spectrum-Analyser-cpp/blob/main/resources/IMG_20220924_215027.jpg" width = 800>
 
 #
